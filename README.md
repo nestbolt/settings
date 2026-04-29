@@ -17,8 +17,8 @@ This package provides a **database-backed settings store** for [NestJS](https://
 Once installed, using it is as simple as:
 
 ```typescript
-const appName = await settingsService.get<string>('app.name', 'MyApp');
-await settingsService.set('app.theme', 'dark');
+const appName = await settingsService.get<string>("app.name", "MyApp");
+await settingsService.set("app.theme", "dark");
 ```
 
 ## Table of Contents
@@ -85,15 +85,17 @@ Optional:
 1. Register the module in your `AppModule`:
 
 ```typescript
-import { SettingsModule } from '@nestbolt/settings';
+import { SettingsModule } from "@nestbolt/settings";
 
 @Module({
   imports: [
-    TypeOrmModule.forRoot({ /* ... */ }),
+    TypeOrmModule.forRoot({
+      /* ... */
+    }),
     SettingsModule.forRoot({
       defaults: [
-        { key: 'app.name', value: 'MyApp', type: 'string' },
-        { key: 'app.perPage', value: 25, type: 'number' },
+        { key: "app.name", value: "MyApp", type: "string" },
+        { key: "app.perPage", value: 25, type: "number" },
       ],
     }),
   ],
@@ -104,18 +106,18 @@ export class AppModule {}
 2. Inject and use the service:
 
 ```typescript
-import { SettingsService } from '@nestbolt/settings';
+import { SettingsService } from "@nestbolt/settings";
 
 @Injectable()
 export class AppService {
   constructor(private readonly settings: SettingsService) {}
 
   async getAppName(): Promise<string> {
-    return this.settings.get<string>('app.name', 'Default');
+    return this.settings.get<string>("app.name", "Default");
   }
 
   async updateTheme(theme: string): Promise<void> {
-    await this.settings.set('app.theme', theme, { group: 'appearance' });
+    await this.settings.set("app.theme", theme, { group: "appearance" });
   }
 }
 ```
@@ -126,14 +128,19 @@ export class AppService {
 
 ```typescript
 SettingsModule.forRoot({
-  cacheTtl: 60000,         // 1 minute cache (default)
-  autoSeed: true,          // Auto-seed defaults (default: true)
+  cacheTtl: 60000, // 1 minute cache (default)
+  autoSeed: true, // Auto-seed defaults (default: true)
   defaults: [
-    { key: 'app.name', value: 'MyApp', type: 'string', group: 'app' },
-    { key: 'app.debug', value: false, type: 'boolean', group: 'app' },
-    { key: 'mail.from', value: 'noreply@example.com', type: 'string', group: 'mail' },
+    { key: "app.name", value: "MyApp", type: "string", group: "app" },
+    { key: "app.debug", value: false, type: "boolean", group: "app" },
+    {
+      key: "mail.from",
+      value: "noreply@example.com",
+      type: "string",
+      group: "mail",
+    },
   ],
-})
+});
 ```
 
 ### Async Configuration (forRootAsync)
@@ -143,12 +150,12 @@ SettingsModule.forRootAsync({
   imports: [ConfigModule],
   inject: [ConfigService],
   useFactory: (config: ConfigService) => ({
-    cacheTtl: config.get('SETTINGS_CACHE_TTL', 60000),
+    cacheTtl: config.get("SETTINGS_CACHE_TTL", 60000),
     defaults: [
-      { key: 'app.name', value: config.get('APP_NAME'), type: 'string' },
+      { key: "app.name", value: config.get("APP_NAME"), type: "string" },
     ],
   }),
-})
+});
 ```
 
 The module is registered as **global** — `SettingsService` is available everywhere without re-importing.
@@ -157,32 +164,32 @@ The module is registered as **global** — `SettingsService` is available everyw
 
 Inject `SettingsService` into any service or controller:
 
-| Method | Returns | Description |
-|--------|---------|-------------|
-| `get<T>(key, default?)` | `Promise<T>` | Get a setting value, returns default if not found |
-| `getOrFail<T>(key)` | `Promise<T>` | Get a setting value, throws `SettingNotFoundException` if not found |
-| `set(key, value, options?)` | `Promise<SettingEntity>` | Create or update a setting |
-| `has(key)` | `Promise<boolean>` | Check if a setting exists |
-| `forget(key)` | `Promise<void>` | Delete a setting |
-| `all()` | `Promise<Record<string, any>>` | Get all settings as a key-value map |
-| `group(name)` | `Promise<Record<string, any>>` | Get all settings in a group |
-| `flushCache()` | `void` | Clear the in-memory cache |
+| Method                      | Returns                        | Description                                                         |
+| --------------------------- | ------------------------------ | ------------------------------------------------------------------- |
+| `get<T>(key, default?)`     | `Promise<T>`                   | Get a setting value, returns default if not found                   |
+| `getOrFail<T>(key)`         | `Promise<T>`                   | Get a setting value, throws `SettingNotFoundException` if not found |
+| `set(key, value, options?)` | `Promise<SettingEntity>`       | Create or update a setting                                          |
+| `has(key)`                  | `Promise<boolean>`             | Check if a setting exists                                           |
+| `forget(key)`               | `Promise<void>`                | Delete a setting                                                    |
+| `all()`                     | `Promise<Record<string, any>>` | Get all settings as a key-value map                                 |
+| `group(name)`               | `Promise<Record<string, any>>` | Get all settings in a group                                         |
+| `flushCache()`              | `void`                         | Clear the in-memory cache                                           |
 
 ## Setting Types
 
 Settings support four types with automatic casting:
 
-| Type | Stored As | Cast To |
-|------|-----------|---------|
-| `string` | text | `string` |
-| `number` | text | `Number()` |
-| `boolean` | text | `true`/`"1"` = `true`, else `false` |
-| `json` | text | `JSON.parse()` |
+| Type      | Stored As | Cast To                             |
+| --------- | --------- | ----------------------------------- |
+| `string`  | text      | `string`                            |
+| `number`  | text      | `Number()`                          |
+| `boolean` | text      | `true`/`"1"` = `true`, else `false` |
+| `json`    | text      | `JSON.parse()`                      |
 
 ```typescript
-await settings.set('app.port', 3000, { type: 'number' });
-await settings.set('app.debug', true, { type: 'boolean' });
-await settings.set('app.config', { theme: 'dark' }, { type: 'json' });
+await settings.set("app.port", 3000, { type: "number" });
+await settings.set("app.debug", true, { type: "boolean" });
+await settings.set("app.config", { theme: "dark" }, { type: "json" });
 ```
 
 If no type is specified, it is inferred from the value.
@@ -192,10 +199,10 @@ If no type is specified, it is inferred from the value.
 Organize settings by group for easy retrieval:
 
 ```typescript
-await settings.set('mail.host', 'smtp.example.com', { group: 'mail' });
-await settings.set('mail.port', '587', { group: 'mail' });
+await settings.set("mail.host", "smtp.example.com", { group: "mail" });
+await settings.set("mail.port", "587", { group: "mail" });
 
-const mailSettings = await settings.group('mail');
+const mailSettings = await settings.group("mail");
 // { 'mail.host': 'smtp.example.com', 'mail.port': '587' }
 ```
 
@@ -213,19 +220,19 @@ When `autoSeed` is enabled (default), the module seeds any `defaults` that don't
 
 When `@nestjs/event-emitter` is installed, the following events are emitted:
 
-| Event | Payload |
-|-------|---------|
-| `settings.created` | `{ key, value, type, group }` |
+| Event              | Payload                             |
+| ------------------ | ----------------------------------- |
+| `settings.created` | `{ key, value, type, group }`       |
 | `settings.updated` | `{ key, oldValue, newValue, type }` |
-| `settings.deleted` | `{ key, lastValue }` |
+| `settings.deleted` | `{ key, lastValue }`                |
 
 ## Configuration Options
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `defaults` | `SettingDefinition[]` | `undefined` | Default settings to seed on init |
-| `cacheTtl` | `number` | `60000` | Cache TTL in ms (0 to disable) |
-| `autoSeed` | `boolean` | `true` | Auto-seed defaults if keys don't exist |
+| Option     | Type                  | Default     | Description                            |
+| ---------- | --------------------- | ----------- | -------------------------------------- |
+| `defaults` | `SettingDefinition[]` | `undefined` | Default settings to seed on init       |
+| `cacheTtl` | `number`              | `60000`     | Cache TTL in ms (0 to disable)         |
+| `autoSeed` | `boolean`             | `true`      | Auto-seed defaults if keys don't exist |
 
 ## Testing
 
@@ -256,10 +263,6 @@ Please see [CONTRIBUTING](CONTRIBUTING.md) for details.
 ## Security
 
 If you discover any security-related issues, please report them via [GitHub Issues](https://github.com/nestbolt/settings/issues) with the **security** label instead of using the public issue tracker.
-
-## Credits
-
-- Inspired by [spatie/laravel-settings](https://github.com/spatie/laravel-settings)
 
 ## License
 
