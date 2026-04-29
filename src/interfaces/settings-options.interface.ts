@@ -1,8 +1,14 @@
+import type {
+  InjectionToken,
+  ModuleMetadata,
+  OptionalFactoryDependency,
+} from "@nestjs/common";
+
 export type SettingType = "string" | "number" | "boolean" | "json";
 
 export interface SettingDefinition {
   key: string;
-  value: any;
+  value: unknown;
   type?: SettingType;
   group?: string;
   description?: string;
@@ -15,10 +21,15 @@ export interface SettingsModuleOptions {
   cacheTtl?: number;
   /** Whether to auto-seed defaults if keys don't exist. Default: true */
   autoSeed?: boolean;
+  /** Whether to register the module globally. Default: true */
+  global?: boolean;
 }
 
-export interface SettingsAsyncOptions {
-  imports?: any[];
-  inject?: any[];
-  useFactory: (...args: any[]) => Promise<SettingsModuleOptions> | SettingsModuleOptions;
+export interface SettingsAsyncOptions extends Pick<ModuleMetadata, "imports"> {
+  inject?: Array<InjectionToken | OptionalFactoryDependency>;
+  useFactory: (
+    ...args: unknown[]
+  ) => Promise<SettingsModuleOptions> | SettingsModuleOptions;
+  /** Whether to register the module globally. Default: true */
+  global?: boolean;
 }

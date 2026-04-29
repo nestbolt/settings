@@ -1,4 +1,5 @@
 import { Inject } from "@nestjs/common";
+import { assertValidKey } from "../utils";
 
 /**
  * Parameter decorator to inject a setting value by key.
@@ -15,6 +16,6 @@ import { Inject } from "@nestjs/common";
  * ```
  */
 export function Setting(key: string): ParameterDecorator {
-  const token = `SETTING_${key}`;
-  return Inject(token);
+  assertValidKey(key);
+  return Inject(`SETTING_${key}`);
 }

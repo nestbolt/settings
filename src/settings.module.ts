@@ -19,10 +19,14 @@ export class SettingsModule {
 
     return {
       module: SettingsModule,
-      global: true,
+      global: options.global ?? true,
       imports: [TypeOrmModule.forFeature([SettingEntity])],
       providers,
-      exports: [SettingsService, SETTINGS_OPTIONS],
+      exports: [
+        SettingsService,
+        SETTINGS_OPTIONS,
+        ...this.settingProviderTokens(options),
+      ],
     };
   }
 
@@ -38,14 +42,19 @@ export class SettingsModule {
 
     return {
       module: SettingsModule,
-      global: true,
-      imports: [...(asyncOptions.imports ?? []), TypeOrmModule.forFeature([SettingEntity])],
+      global: asyncOptions.global ?? true,
+      imports: [
+        ...(asyncOptions.imports ?? []),
+        TypeOrmModule.forFeature([SettingEntity]),
+      ],
       providers,
       exports: [SettingsService, SETTINGS_OPTIONS],
     };
   }
 
-  private static createSettingProviders(options: SettingsModuleOptions): Provider[] {
+  private static createSettingProviders(
+    options: SettingsModuleOptions,
+  ): Provider[] {
     if (!options.defaults) return [];
 
     return options.defaults.map((def) => ({
@@ -55,5 +64,12 @@ export class SettingsModule {
       },
       inject: [SettingsService],
     }));
+  }
+
+  private static settingProviderTokens(
+    options: SettingsModuleOptions,
+  ): string[] {
+    if (!options.defaults) return [];
+    return options.defaults.map((def) => `SETTING_${def.key}`);
   }
 }

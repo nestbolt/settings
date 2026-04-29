@@ -15,10 +15,13 @@ export { Setting } from "./decorators";
 
 // Events
 export { SETTINGS_EVENTS } from "./events";
-export type { SettingCreatedEvent, SettingUpdatedEvent, SettingDeletedEvent } from "./events";
+export type {
+  SettingCreatedEvent,
+  SettingUpdatedEvent,
+  SettingDeletedEvent,
+} from "./events";
 
 // Exceptions
-export { SettingsNotInitializedException } from "./exceptions";
 export { SettingNotFoundException } from "./exceptions";
 
 // Interfaces

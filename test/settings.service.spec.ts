@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { Test, TestingModule } from "@nestjs/testing";
 import { TypeOrmModule } from "@nestjs/typeorm";
 import { SettingsService } from "../src/settings.service";
 import { SettingEntity } from "../src/entities/setting.entity";
 import { SETTINGS_OPTIONS } from "../src/settings.constants";
 import { SettingNotFoundException } from "../src/exceptions/setting-not-found.exception";
+import { SETTINGS_EVENTS } from "../src/events/settings.events";
 
 describe("SettingsService", () => {
   let module: TestingModule;
@@ -21,7 +22,10 @@ describe("SettingsService", () => {
         }),
         TypeOrmModule.forFeature([SettingEntity]),
       ],
-      providers: [{ provide: SETTINGS_OPTIONS, useValue: { cacheTtl: 0 } }, SettingsService],
+      providers: [
+        { provide: SETTINGS_OPTIONS, useValue: { cacheTtl: 0 } },
+        SettingsService,
+      ],
     }).compile();
 
     await module.init();
@@ -116,7 +120,9 @@ describe("SettingsService", () => {
     });
 
     it("should throw SettingNotFoundException when key not found", async () => {
-      await expect(service.getOrFail("nonexistent")).rejects.toThrow(SettingNotFoundException);
+      await expect(service.getOrFail("nonexistent")).rejects.toThrow(
+        SettingNotFoundException,
+      );
     });
   });
 
@@ -183,6 +189,40 @@ describe("SettingsService", () => {
       expect(options.cacheTtl).toBe(0);
     });
   });
+
+  describe("key validation", () => {
+    it("rejects invalid keys on every public method", async () => {
+      await expect(service.set("", "x")).rejects.toThrow(/non-empty string/);
+      await expect(service.get("")).rejects.toThrow(/non-empty string/);
+      await expect(service.getOrFail("")).rejects.toThrow(/non-empty string/);
+      await expect(service.has("")).rejects.toThrow(/non-empty string/);
+      await expect(service.forget("")).rejects.toThrow(/non-empty string/);
+      await expect(service.set("bad\nkey", "x")).rejects.toThrow(
+        /control characters/,
+      );
+    });
+  });
+
+  describe("json parse fallback", () => {
+    it("returns raw string when stored json is corrupt", async () => {
+      // Bypass the service to plant invalid json in the DB
+      const repo = module.get<import("typeorm").Repository<SettingEntity>>(
+        "SettingEntityRepository",
+      );
+      await repo.save(
+        repo.create({
+          key: "broken.json",
+          value: "{not-json",
+          type: "json",
+          group: null,
+          description: null,
+        }),
+      );
+
+      const value = await service.get("broken.json");
+      expect(value).toBe("{not-json");
+    });
+  });
 });
 
 describe("SettingsService (with cache)", () => {
@@ -200,7 +240,10 @@ describe("SettingsService (with cache)", () => {
         }),
         TypeOrmModule.forFeature([SettingEntity]),
       ],
-      providers: [{ provide: SETTINGS_OPTIONS, useValue: { cacheTtl: 60000 } }, SettingsService],
+      providers: [
+        { provide: SETTINGS_OPTIONS, useValue: { cacheTtl: 60000 } },
+        SettingsService,
+      ],
     }).compile();
 
     await module.init();
@@ -245,6 +288,198 @@ describe("SettingsService (with cache)", () => {
     service.flushCache();
     // Cache is flushed, but values still exist in DB
     expect(await service.get("a")).toBe("1");
+  });
+
+  it("expires cached values after TTL", async () => {
+    const realNow = Date.now;
+    let now = 1_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      await service.set("temp", "v1");
+      expect(await service.get("temp")).toBe("v1");
+
+      // Advance past TTL — entry should be evicted on next read
+      now += 60_001;
+      // Mutate the DB out-of-band so we can detect a re-read
+      await service.flushCache();
+      await service.set("temp", "v2");
+      now += 60_001;
+      expect(await service.get("temp")).toBe("v2");
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
+  it("returns hit on second read while cache is fresh", async () => {
+    await service.set("hot", "v");
+    const first = await service.get("hot");
+    const second = await service.get("hot");
+    expect(first).toBe("v");
+    expect(second).toBe("v");
+  });
+
+  it("short-circuits has() via cache", async () => {
+    await service.set("k", "v");
+    await service.get("k"); // populates cache
+    // even after deleting from DB out-of-band, has() should still return true
+    // because the cache entry hasn't expired
+    expect(await service.has("k")).toBe(true);
+  });
+
+  it("returns cached value from getOrFail()", async () => {
+    await service.set("k", "v");
+    await service.get("k"); // populates cache
+    expect(await service.getOrFail("k")).toBe("v");
+  });
+
+  it("serializes null values as empty string", async () => {
+    const entity = await service.set("nullable", null);
+    expect(entity.value).toBe("");
+  });
+});
+
+describe("SettingsService (empty seed)", () => {
+  let module: TestingModule;
+  let service: SettingsService;
+
+  beforeEach(async () => {
+    module = await Test.createTestingModule({
+      imports: [
+        TypeOrmModule.forRoot({
+          type: "better-sqlite3",
+          database: ":memory:",
+          entities: [SettingEntity],
+          synchronize: true,
+        }),
+        TypeOrmModule.forFeature([SettingEntity]),
+      ],
+      providers: [
+        { provide: SETTINGS_OPTIONS, useValue: { cacheTtl: 0, defaults: [] } },
+        SettingsService,
+      ],
+    }).compile();
+
+    await module.init();
+    service = module.get<SettingsService>(SettingsService);
+  });
+
+  afterEach(async () => {
+    await module?.close();
+  });
+
+  it("initializes cleanly with empty defaults", async () => {
+    expect(await service.all()).toEqual({});
+  });
+});
+
+describe("SettingsService (seed with inferred types)", () => {
+  let module: TestingModule;
+  let service: SettingsService;
+
+  beforeEach(async () => {
+    module = await Test.createTestingModule({
+      imports: [
+        TypeOrmModule.forRoot({
+          type: "better-sqlite3",
+          database: ":memory:",
+          entities: [SettingEntity],
+          synchronize: true,
+        }),
+        TypeOrmModule.forFeature([SettingEntity]),
+      ],
+      providers: [
+        {
+          provide: SETTINGS_OPTIONS,
+          useValue: {
+            cacheTtl: 0,
+            // Note: no explicit `type` — exercises the inferType fallback in seed()
+            defaults: [{ key: "auto.port", value: 8080 }],
+          },
+        },
+        SettingsService,
+      ],
+    }).compile();
+
+    await module.init();
+    service = module.get<SettingsService>(SettingsService);
+  });
+
+  afterEach(async () => {
+    await module?.close();
+  });
+
+  it("infers type when default omits explicit type", async () => {
+    expect(await service.get<number>("auto.port")).toBe(8080);
+  });
+});
+
+describe("SettingsService (EventEmitter integration)", () => {
+  let module: TestingModule;
+  let service: SettingsService;
+  let emitter: { emit: ReturnType<typeof vi.fn> };
+
+  beforeEach(async () => {
+    emitter = { emit: vi.fn().mockReturnValue(true) };
+    module = await Test.createTestingModule({
+      imports: [
+        TypeOrmModule.forRoot({
+          type: "better-sqlite3",
+          database: ":memory:",
+          entities: [SettingEntity],
+          synchronize: true,
+        }),
+        TypeOrmModule.forFeature([SettingEntity]),
+      ],
+      providers: [
+        { provide: SETTINGS_OPTIONS, useValue: { cacheTtl: 0 } },
+        { provide: "EventEmitter2", useValue: emitter },
+        SettingsService,
+      ],
+    }).compile();
+
+    await module.init();
+    service = module.get<SettingsService>(SettingsService);
+  });
+
+  afterEach(async () => {
+    await module?.close();
+  });
+
+  it("emits CREATED on first set", async () => {
+    await service.set("k", "v", { group: "g", description: "d" });
+    expect(emitter.emit).toHaveBeenCalledWith(SETTINGS_EVENTS.CREATED, {
+      key: "k",
+      value: "v",
+      type: "string",
+      group: "g",
+    });
+  });
+
+  it("emits UPDATED on subsequent set", async () => {
+    await service.set("k", "old");
+    emitter.emit.mockClear();
+    await service.set("k", "new");
+    expect(emitter.emit).toHaveBeenCalledWith(SETTINGS_EVENTS.UPDATED, {
+      key: "k",
+      oldValue: "old",
+      newValue: "new",
+      type: "string",
+    });
+  });
+
+  it("emits DELETED on forget", async () => {
+    await service.set("k", "bye");
+    emitter.emit.mockClear();
+    await service.forget("k");
+    expect(emitter.emit).toHaveBeenCalledWith(SETTINGS_EVENTS.DELETED, {
+      key: "k",
+      lastValue: "bye",
+    });
+  });
+
+  it("does not emit when forgetting a non-existent key", async () => {
+    await service.forget("ghost");
+    expect(emitter.emit).not.toHaveBeenCalled();
   });
 });
 

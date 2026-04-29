@@ -1,18 +1,30 @@
-import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from "@nestjs/common";
-import { InjectRepository } from "@nestjs/typeorm";
-import { Repository } from "typeorm";
+import {
+  Inject,
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+  Optional,
+} from "@nestjs/common";
+import { InjectDataSource, InjectRepository } from "@nestjs/typeorm";
+import { DataSource, EntityManager, Repository } from "typeorm";
 import { SettingEntity } from "./entities/setting.entity";
 import { SETTINGS_OPTIONS } from "./settings.constants";
 import { SETTINGS_EVENTS } from "./events/settings.events";
 import { SettingNotFoundException } from "./exceptions/setting-not-found.exception";
-import type { SettingsModuleOptions, SettingDefinition, SettingType } from "./interfaces";
+import { assertValidKey } from "./utils";
+import type {
+  SettingsModuleOptions,
+  SettingDefinition,
+  SettingType,
+} from "./interfaces";
 
 interface EventEmitterLike {
-  emit(event: string, ...args: any[]): boolean;
+  emit(event: string, ...args: unknown[]): boolean;
 }
 
 interface CacheEntry {
-  value: any;
+  value: unknown;
   expiresAt: number;
 }
 
@@ -27,7 +39,10 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
     @Inject(SETTINGS_OPTIONS) private readonly options: SettingsModuleOptions,
     @InjectRepository(SettingEntity)
     private readonly settingRepo: Repository<SettingEntity>,
-    @Optional() @Inject("EventEmitter2") private readonly eventEmitter?: EventEmitterLike,
+    @InjectDataSource() private readonly dataSource: DataSource,
+    @Optional()
+    @Inject("EventEmitter2")
+    private readonly eventEmitter?: EventEmitterLike,
   ) {
     this.cacheTtl = options.cacheTtl ?? 60000;
   }
@@ -58,7 +73,8 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
 
   // --- Read ---
 
-  async get<T = any>(key: string, defaultValue?: T): Promise<T> {
+  async get<T = unknown>(key: string, defaultValue?: T): Promise<T> {
+    assertValidKey(key);
     const cached = this.getCached(key);
     if (cached !== undefined) return cached as T;
 
@@ -73,7 +89,8 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
     return value as T;
   }
 
-  async getOrFail<T = any>(key: string): Promise<T> {
+  async getOrFail<T = unknown>(key: string): Promise<T> {
+    assertValidKey(key);
     const cached = this.getCached(key);
     if (cached !== undefined) return cached as T;
 
@@ -91,46 +108,58 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
 
   async set(
     key: string,
-    value: any,
+    value: unknown,
     options?: { type?: SettingType; group?: string; description?: string },
   ): Promise<SettingEntity> {
-    const existing = await this.settingRepo.findOne({ where: { key } });
+    assertValidKey(key);
     const serialized = this.serializeValue(value);
     const type = options?.type ?? this.inferType(value);
 
-    if (existing) {
-      const oldValue = this.castValue(existing.value, existing.type as SettingType);
-      existing.value = serialized;
-      existing.type = type;
-      if (options?.group !== undefined) existing.group = options.group;
-      if (options?.description !== undefined) existing.description = options.description;
-      const saved = await this.settingRepo.save(existing);
-      this.setCache(key, value);
-      this.emit(SETTINGS_EVENTS.UPDATED, { key, oldValue, newValue: value, type });
-      return saved;
-    }
+    return this.dataSource.transaction(async (manager) => {
+      const repo = manager.getRepository(SettingEntity);
+      const existing = await repo.findOne({ where: { key } });
+      const oldValue = existing
+        ? this.castValue(existing.value, existing.type as SettingType)
+        : undefined;
 
-    const setting = this.settingRepo.create({
-      key,
-      value: serialized,
-      type,
-      group: options?.group ?? null,
-      description: options?.description ?? null,
+      const partial: Partial<SettingEntity> = {
+        key,
+        value: serialized,
+        type,
+      };
+      if (options?.group !== undefined) partial.group = options.group;
+      else if (!existing) partial.group = null;
+      if (options?.description !== undefined)
+        partial.description = options.description;
+      else if (!existing) partial.description = null;
+
+      await repo.upsert(partial as SettingEntity, ["key"]);
+      const saved = await repo.findOneOrFail({ where: { key } });
+
+      this.setCache(key, value);
+      if (existing) {
+        this.emit(SETTINGS_EVENTS.UPDATED, {
+          key,
+          oldValue,
+          newValue: value,
+          type,
+        });
+      } else {
+        this.emit(SETTINGS_EVENTS.CREATED, {
+          key,
+          value,
+          type,
+          group: saved.group,
+        });
+      }
+      return saved;
     });
-    const saved = await this.settingRepo.save(setting);
-    this.setCache(key, value);
-    this.emit(SETTINGS_EVENTS.CREATED, {
-      key,
-      value,
-      type,
-      group: options?.group ?? null,
-    });
-    return saved;
   }
 
   // --- Check ---
 
   async has(key: string): Promise<boolean> {
+    assertValidKey(key);
     const cached = this.getCached(key);
     if (cached !== undefined) return true;
 
@@ -141,31 +170,44 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
   // --- Delete ---
 
   async forget(key: string): Promise<void> {
-    const setting = await this.settingRepo.findOne({ where: { key } });
-    if (!setting) return;
+    assertValidKey(key);
+    await this.dataSource.transaction(async (manager: EntityManager) => {
+      const repo = manager.getRepository(SettingEntity);
+      const setting = await repo.findOne({ where: { key } });
+      if (!setting) return;
 
-    const lastValue = this.castValue(setting.value, setting.type as SettingType);
-    await this.settingRepo.remove(setting);
-    this.invalidateCache(key);
-    this.emit(SETTINGS_EVENTS.DELETED, { key, lastValue });
+      const lastValue = this.castValue(
+        setting.value,
+        setting.type as SettingType,
+      );
+      await repo.remove(setting);
+      this.invalidateCache(key);
+      this.emit(SETTINGS_EVENTS.DELETED, { key, lastValue });
+    });
   }
 
   // --- Bulk ---
 
-  async all(): Promise<Record<string, any>> {
+  async all(): Promise<Record<string, unknown>> {
     const settings = await this.settingRepo.find();
-    const result: Record<string, any> = {};
+    const result: Record<string, unknown> = {};
     for (const setting of settings) {
-      result[setting.key] = this.castValue(setting.value, setting.type as SettingType);
+      result[setting.key] = this.castValue(
+        setting.value,
+        setting.type as SettingType,
+      );
     }
     return result;
   }
 
-  async group(name: string): Promise<Record<string, any>> {
+  async group(name: string): Promise<Record<string, unknown>> {
     const settings = await this.settingRepo.find({ where: { group: name } });
-    const result: Record<string, any> = {};
+    const result: Record<string, unknown> = {};
     for (const setting of settings) {
-      result[setting.key] = this.castValue(setting.value, setting.type as SettingType);
+      result[setting.key] = this.castValue(
+        setting.value,
+        setting.type as SettingType,
+      );
     }
     return result;
   }
@@ -179,22 +221,30 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
   // --- Private ---
 
   private async seed(defaults: SettingDefinition[]): Promise<void> {
+    if (defaults.length === 0) return;
+
     for (const def of defaults) {
-      const exists = await this.settingRepo.findOne({ where: { key: def.key } });
-      if (!exists) {
-        const setting = this.settingRepo.create({
-          key: def.key,
-          value: this.serializeValue(def.value),
-          type: def.type ?? this.inferType(def.value),
-          group: def.group ?? null,
-          description: def.description ?? null,
-        });
-        await this.settingRepo.save(setting);
-      }
+      assertValidKey(def.key);
     }
+
+    const rows = defaults.map((def) => ({
+      key: def.key,
+      value: this.serializeValue(def.value),
+      type: def.type ?? this.inferType(def.value),
+      group: def.group ?? null,
+      description: def.description ?? null,
+    }));
+
+    await this.settingRepo
+      .createQueryBuilder()
+      .insert()
+      .into(SettingEntity)
+      .values(rows)
+      .orIgnore()
+      .execute();
   }
 
-  private castValue(raw: string, type: SettingType): any {
+  private castValue(raw: string, type: SettingType): unknown {
     switch (type) {
       case "number":
         return Number(raw);
@@ -212,20 +262,20 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private serializeValue(value: any): string {
+  private serializeValue(value: unknown): string {
     if (value === null || value === undefined) return "";
     if (typeof value === "object") return JSON.stringify(value);
     return String(value);
   }
 
-  private inferType(value: any): SettingType {
+  private inferType(value: unknown): SettingType {
     if (typeof value === "number") return "number";
     if (typeof value === "boolean") return "boolean";
     if (typeof value === "object" && value !== null) return "json";
     return "string";
   }
 
-  private getCached(key: string): any | undefined {
+  private getCached(key: string): unknown {
     if (this.cacheTtl <= 0) return undefined;
 
     const entry = this.cache.get(key);
@@ -239,7 +289,7 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
     return entry.value;
   }
 
-  private setCache(key: string, value: any): void {
+  private setCache(key: string, value: unknown): void {
     if (this.cacheTtl <= 0) return;
     this.cache.set(key, { value, expiresAt: Date.now() + this.cacheTtl });
   }
@@ -248,7 +298,7 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
     this.cache.delete(key);
   }
 
-  private emit(event: string, payload: any): void {
+  private emit(event: string, payload: unknown): void {
     if (this.eventEmitter) {
       this.eventEmitter.emit(event, payload);
     }

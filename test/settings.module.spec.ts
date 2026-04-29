@@ -161,4 +161,61 @@ describe("SettingsModule", () => {
       expect(options.cacheTtl).toBe(10000);
     });
   });
+
+  describe("global flag", () => {
+    it("registers globally by default for forRoot()", () => {
+      const dyn = SettingsModule.forRoot();
+      expect(dyn.global).toBe(true);
+    });
+
+    it("respects global: false on forRoot()", () => {
+      const dyn = SettingsModule.forRoot({ global: false });
+      expect(dyn.global).toBe(false);
+    });
+
+    it("registers globally by default for forRootAsync()", () => {
+      const dyn = SettingsModule.forRootAsync({ useFactory: () => ({}) });
+      expect(dyn.global).toBe(true);
+    });
+
+    it("respects global: false on forRootAsync()", () => {
+      const dyn = SettingsModule.forRootAsync({
+        global: false,
+        useFactory: () => ({}),
+      });
+      expect(dyn.global).toBe(false);
+    });
+  });
+
+  describe("forRoot() with defaults injection tokens", () => {
+    let module: TestingModule;
+
+    beforeEach(async () => {
+      module = await Test.createTestingModule({
+        imports: [
+          TypeOrmModule.forRoot({
+            type: "better-sqlite3",
+            database: ":memory:",
+            entities: [SettingEntity],
+            synchronize: true,
+          }),
+          SettingsModule.forRoot({
+            cacheTtl: 0,
+            defaults: [{ key: "app.port", value: 3000, type: "number" }],
+          }),
+        ],
+      }).compile();
+
+      await module.init();
+    });
+
+    afterEach(async () => {
+      await module?.close();
+    });
+
+    it("exposes a SETTING_<key> provider for each default", () => {
+      const port = module.get<number>("SETTING_app.port");
+      expect(port).toBe(3000);
+    });
+  });
 });
